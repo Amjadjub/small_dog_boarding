@@ -19,6 +19,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
           </Link>
           <nav aria-label="ניווט ראשי">
             <Link href="/#services">שירותים</Link>
+            <Link href="/owner/dashboard">האזור שלי</Link>
             <Link className="nav-cta" href="/request">שליחת בקשה</Link>
           </nav>
         </header>

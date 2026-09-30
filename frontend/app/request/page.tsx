@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
 
 type Errors = Record<string, string[] | string>;
@@ -14,6 +14,15 @@ export default function RequestPage() {
   const [submitting, setSubmitting] = useState(false);
   const [successId, setSuccessId] = useState<number | null>(null);
   const [errors, setErrors] = useState<Errors>({});
+  const [ownerDogs, setOwnerDogs] = useState<{ id: number; name: string }[]>([]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(async () => {
+      const response = await apiFetch("/owner/dogs/");
+      if (response.ok) setOwnerDogs(await response.json());
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -22,6 +31,7 @@ export default function RequestPage() {
     const form = new FormData(event.currentTarget);
     const body = Object.fromEntries(form.entries());
     if (!body.dog_age) delete body.dog_age;
+    if (!body.dog_id) delete body.dog_id;
     try {
       const response = await apiFetch("/stay-requests/", { method: "POST", body: JSON.stringify(body) });
       const data = await response.json();
@@ -68,6 +78,7 @@ export default function RequestPage() {
           <Field name="email" label="דוא״ל (לא חובה)" errors={errors} type="email" autoComplete="email" />
         </fieldset>
         <fieldset><legend>פרטי הכלב</legend>
+          {ownerDogs.length > 0 && <label>קישור לכרטיס כלב<select name="dog_id" defaultValue=""><option value="">ללא קישור</option>{ownerDogs.map(dog => <option key={dog.id} value={dog.id}>{dog.name}</option>)}</select><small>בחירה כאן תקשר את הבקשה ואת ההזמנה העתידית לחשבון שלך.</small></label>}
           <div className="two-columns">
             <Field name="dog_name" label="שם הכלב" required errors={errors} />
             <Field name="dog_age" label="גיל (לא חובה)" errors={errors} type="number" min="0" max="30" step="0.1" />
