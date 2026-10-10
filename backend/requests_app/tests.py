@@ -1,10 +1,17 @@
 from datetime import date, timedelta
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.tokens import default_token_generator
+from django.core import mail
+from django.core.cache import cache
 from django.test import TestCase
+from django.utils import timezone
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 from rest_framework.test import APIClient
 
-from .models import Booking, Dog, OwnerProfile, StayRequest, StayUpdate
+from .models import Booking, Dog, Notification, OwnerProfile, StayRequest, StayUpdate
+from .services import create_verification_token
 
 
 def payload(**overrides):
@@ -104,9 +111,9 @@ class OwnerPortalTests(TestCase):
         User = get_user_model()
         self.manager = User.objects.create_user("manager", password="Manager-strong-pass-123!", is_staff=True)
         self.owner = User.objects.create_user("owner@example.com", email="owner@example.com", password="Owner-strong-pass-123!", first_name="נועה")
-        OwnerProfile.objects.create(user=self.owner, phone="0501234567")
+        OwnerProfile.objects.create(user=self.owner, phone="0501234567", email_verified_at=timezone.now())
         self.other_owner = User.objects.create_user("other@example.com", email="other@example.com", password="Other-strong-pass-123!")
-        OwnerProfile.objects.create(user=self.other_owner, phone="0507654321")
+        OwnerProfile.objects.create(user=self.other_owner, phone="0507654321", email_verified_at=timezone.now())
         self.dog = Dog.objects.create(owner=self.owner, name="לולה", allergies="רגישה לעוף")
 
     def csrf_client(self):
@@ -115,12 +122,20 @@ class OwnerPortalTests(TestCase):
         client.credentials(HTTP_X_CSRFTOKEN=response.data["csrfToken"])
         return client
 
-    def test_owner_registration_logs_user_in(self):
+    def test_owner_registration_requires_email_verification(self):
         client = self.csrf_client()
-        response = client.post("/api/owner/register/", {"email": "new@example.com", "password": "New-owner-pass-987!", "full_name": "דנה ישראלי", "phone": "0520000000"}, format="json")
+        with self.captureOnCommitCallbacks(execute=True):
+            response = client.post("/api/owner/register/", {"email": "new@example.com", "password": "New-owner-pass-987!", "full_name": "דנה ישראלי", "phone": "0520000000"}, format="json")
         self.assertEqual(response.status_code, 201)
         self.assertTrue(OwnerProfile.objects.filter(user__email="new@example.com").exists())
-        self.assertEqual(client.get("/api/owner/session/").status_code, 200)
+        self.assertEqual(client.get("/api/owner/session/").status_code, 403)
+        self.assertEqual(len(mail.outbox), 1)
+
+        user = get_user_model().objects.get(email="new@example.com")
+        verified = client.post("/api/owner/verify-email/", {"token": create_verification_token(user)}, format="json")
+        self.assertEqual(verified.status_code, 200)
+        user.owner_profile.refresh_from_db()
+        self.assertIsNotNone(user.owner_profile.email_verified_at)
 
     def test_owner_can_only_read_and_edit_their_own_dogs(self):
         client = APIClient()
@@ -165,3 +180,52 @@ class OwnerPortalTests(TestCase):
         response = client.post("/api/stay-requests/", payload(dog_id=self.dog.id, email=self.other_owner.email), format="json")
         self.assertEqual(response.status_code, 400)
         self.assertEqual(StayRequest.objects.count(), 0)
+
+    def test_verification_links_matching_guest_requests_and_booking(self):
+        user = get_user_model().objects.create_user("claim@example.com", email="claim@example.com", password="Claim-owner-pass-123!")
+        OwnerProfile.objects.create(user=user, phone="0500000000")
+        stay_request = StayRequest.objects.create(status="approved", **payload(email="claim@example.com"))
+        booking = Booking.objects.create(request=stay_request, service=stay_request.service, start_date=stay_request.start_date, end_date=stay_request.end_date)
+        client = self.csrf_client()
+        response = client.post("/api/owner/verify-email/", {"token": create_verification_token(user)}, format="json")
+        self.assertEqual(response.status_code, 200)
+        stay_request.refresh_from_db()
+        booking.refresh_from_db()
+        self.assertEqual(stay_request.owner, user)
+        self.assertEqual(booking.owner, user)
+        self.assertTrue(Notification.objects.filter(recipient=user, kind="request_linked").exists())
+
+    def test_password_reset_response_is_generic_and_token_is_single_use(self):
+        client = self.csrf_client()
+        existing = client.post("/api/owner/password-reset/", {"email": self.owner.email}, format="json")
+        missing = client.post("/api/owner/password-reset/", {"email": "missing@example.com"}, format="json")
+        self.assertEqual(existing.data, missing.data)
+        uid = urlsafe_base64_encode(force_bytes(self.owner.pk))
+        token = default_token_generator.make_token(self.owner)
+        first = client.post("/api/owner/password-reset/confirm/", {"uid": uid, "token": token, "password": "Changed-owner-pass-987!"}, format="json")
+        second = client.post("/api/owner/password-reset/confirm/", {"uid": uid, "token": token, "password": "Another-owner-pass-987!"}, format="json")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 400)
+
+    def test_rate_limit_blocks_repeated_login_attempts(self):
+        cache.clear()
+        client = self.csrf_client()
+        responses = [client.post("/api/owner/login/", {"email": "nobody@example.com", "password": "wrong"}, format="json") for _ in range(11)]
+        self.assertEqual(responses[-1].status_code, 429)
+
+    def test_notifications_are_private_to_recipient(self):
+        own = Notification.objects.create(recipient=self.owner, kind="account_verified", title="שלי", message="פרטי")
+        other = Notification.objects.create(recipient=self.other_owner, kind="account_verified", title="לא שלי", message="פרטי")
+        client = APIClient()
+        client.force_authenticate(self.owner)
+        listed = client.get("/api/notifications/")
+        self.assertEqual([item["id"] for item in listed.data], [own.id])
+        self.assertEqual(client.post(f"/api/notifications/{other.id}/read/").status_code, 404)
+        self.assertEqual(client.post(f"/api/notifications/{own.id}/read/").status_code, 200)
+
+    def test_unverified_owner_cannot_access_private_portal(self):
+        user = get_user_model().objects.create_user("unverified@example.com", email="unverified@example.com", password="Unverified-pass-123!")
+        OwnerProfile.objects.create(user=user, phone="0500000001")
+        client = APIClient()
+        client.force_authenticate(user)
+        self.assertEqual(client.get("/api/owner/dashboard/").status_code, 403)

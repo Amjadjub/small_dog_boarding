@@ -9,6 +9,7 @@ type Dog = { id: number; name: string; birth_date: string | null; sex: string; f
 type StayUpdate = { id: number; kind_label: string; message: string; created_at: string };
 type Booking = { id: number; dog_name: string | null; service_label: string; start_date: string; end_date: string; status: string; status_label: string; updates: StayUpdate[] };
 type StayRequest = { id: number; dog_name: string; service_label: string; start_date: string; end_date: string; status: string; status_label: string };
+type Notification = { id: number; title: string; message: string; created_at: string; is_read: boolean };
 
 export default function OwnerDashboard() {
   const router = useRouter();
@@ -16,6 +17,7 @@ export default function OwnerDashboard() {
   const [dogs, setDogs] = useState<Dog[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [requests, setRequests] = useState<StayRequest[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [showDogForm, setShowDogForm] = useState(false);
   const [error, setError] = useState("");
@@ -25,11 +27,12 @@ export default function OwnerDashboard() {
       const session = await apiFetch("/owner/session/");
       if (!session.ok) { router.replace("/owner/login"); return; }
       setName((await session.json()).name);
-      const [dogResponse, dashboardResponse] = await Promise.all([apiFetch("/owner/dogs/"), apiFetch("/owner/dashboard/")]);
-      if (!dogResponse.ok || !dashboardResponse.ok) throw new Error();
+      const [dogResponse, dashboardResponse, notificationResponse] = await Promise.all([apiFetch("/owner/dogs/"), apiFetch("/owner/dashboard/"), apiFetch("/notifications/")]);
+      if (!dogResponse.ok || !dashboardResponse.ok || !notificationResponse.ok) throw new Error();
       setDogs(await dogResponse.json());
       const dashboard = await dashboardResponse.json();
       setBookings(dashboard.bookings); setRequests(dashboard.requests);
+      setNotifications(await notificationResponse.json());
     } catch { setError("לא ניתן לטעון את האזור האישי."); }
     finally { setLoading(false); }
   }, [router]);
@@ -46,6 +49,7 @@ export default function OwnerDashboard() {
   }
 
   async function signOut() { await apiFetch("/owner/logout/", { method: "POST" }); router.replace("/owner/login"); }
+  async function markRead(id: number) { await apiFetch(`/notifications/${id}/read/`, { method: "POST" }); setNotifications(items => items.map(item => item.id === id ? { ...item, is_read: true } : item)); }
 
   if (loading) return <main className="owner-page"><div className="empty-state">טוענים את האזור האישי...</div></main>;
   return <main className="owner-page"><div className="portal-heading"><div><span className="eyebrow">האזור האישי</span><h1>שלום {name || "וברוכים הבאים"}</h1><p>כרטיסי הכלבים, הבקשות והעדכונים שלך במקום אחד.</p></div><button className="text-button" onClick={signOut}>יציאה</button></div>{error && <div className="form-error" role="alert">{error}</div>}
@@ -56,8 +60,10 @@ export default function OwnerDashboard() {
     <section className="portal-section"><div className="portal-section-head"><div><h2>בקשות והזמנות</h2><p>בקשה ממתינה אינה הזמנה מאושרת.</p></div><Link className="button primary" href="/request">בקשת אירוח חדשה</Link></div>
       {requests.length === 0 && bookings.length === 0 ? <div className="empty-state compact"><p>עדיין אין בקשות או הזמנות בחשבון.</p></div> : <div className="owner-request-list">{requests.map(item => <article className="owner-request" key={`request-${item.id}`}><span className={`status ${item.status}`}>{item.status_label}</span><div><strong>{item.dog_name} · {item.service_label}</strong><p>{formatDate(item.start_date)}–{formatDate(item.end_date)}</p></div></article>)}</div>}
     </section>
+    <section className="portal-section"><div className="portal-section-head"><div><h2>התראות</h2><p>אישורים, דחיות ועדכונים מהשהות נשמרים כאן.</p></div></div>{notifications.length === 0 ? <div className="empty-state compact"><p>אין התראות חדשות.</p></div> : <div className="notification-list">{notifications.map(item => <article className={item.is_read ? "notification" : "notification unread"} key={item.id}><div><strong>{item.title}</strong><p>{item.message}</p><time>{formatDateTime(item.created_at)}</time></div>{!item.is_read && <button className="text-button" onClick={() => markRead(item.id)}>סימון כנקראה</button>}</article>)}</div>}</section>
     {bookings.map(booking => <section className="portal-section stay-timeline" key={booking.id}><div className="portal-section-head"><div><span className={`status ${booking.status === "active" ? "approved" : "pending"}`}>{booking.status_label}</span><h2>{booking.dog_name ?? "הזמנה"} · {booking.service_label}</h2><p>{formatDate(booking.start_date)}–{formatDate(booking.end_date)}</p></div></div>{booking.updates.length === 0 ? <div className="empty-state compact"><p>עדיין אין עדכונים מהשהות.</p></div> : <div className="timeline">{booking.updates.map(update => <article key={update.id}><span className="timeline-dot" /><div><strong>{update.kind_label}</strong><time>{new Intl.DateTimeFormat("he-IL", { dateStyle: "short", timeStyle: "short" }).format(new Date(update.created_at))}</time><p>{update.message}</p></div></article>)}</div>}</section>)}
   </main>;
 }
 
 function formatDate(value: string) { return new Intl.DateTimeFormat("he-IL", { day: "numeric", month: "numeric", year: "numeric" }).format(new Date(`${value}T12:00:00`)); }
+function formatDateTime(value: string) { return new Intl.DateTimeFormat("he-IL", { dateStyle: "short", timeStyle: "short" }).format(new Date(value)); }

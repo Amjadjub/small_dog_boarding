@@ -8,11 +8,13 @@ type StayRequest = { id: number; contact_name: string; phone: string; email: str
 type StayUpdate = { id: number; kind_label: string; message: string; visible_to_owner: boolean; created_at: string };
 type InternalNote = { id: number; note: string; created_by_name: string; created_at: string };
 type Booking = { id: number; dog: number | null; dog_name: string | null; owner_email: string | null; service_label: string; start_date: string; end_date: string; status: string; status_label: string; updates: StayUpdate[]; internal_notes: InternalNote[] };
+type Notification = { id: number; title: string; message: string; created_at: string; is_read: boolean };
 
 export default function AdminRequests() {
   const router = useRouter();
   const [requests, setRequests] = useState<StayRequest[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
   const [username, setUsername] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -23,9 +25,10 @@ export default function AdminRequests() {
       const session = await apiFetch("/auth/session/");
       if (!session.ok) { router.replace("/admin/login"); return; }
       setUsername((await session.json()).username);
-      const [requestResponse, bookingResponse] = await Promise.all([apiFetch("/management/stay-requests/"), apiFetch("/management/bookings/")]);
-      if (!requestResponse.ok || !bookingResponse.ok) throw new Error();
+      const [requestResponse, bookingResponse, notificationResponse] = await Promise.all([apiFetch("/management/stay-requests/"), apiFetch("/management/bookings/"), apiFetch("/notifications/")]);
+      if (!requestResponse.ok || !bookingResponse.ok || !notificationResponse.ok) throw new Error();
       setRequests(await requestResponse.json()); setBookings(await bookingResponse.json());
+      setNotifications(await notificationResponse.json());
     } catch { setError("לא ניתן לטעון את נתוני הניהול."); }
     finally { setLoading(false); }
   }, [router]);
@@ -60,8 +63,10 @@ export default function AdminRequests() {
   }
 
   async function signOut() { await apiFetch("/auth/logout/", { method: "POST" }); router.replace("/admin/login"); }
+  async function markRead(id: number) { await apiFetch(`/notifications/${id}/read/`, { method: "POST" }); setNotifications(items => items.map(item => item.id === id ? { ...item, is_read: true } : item)); }
 
   return <main className="admin-page"><div className="admin-heading"><div><span className="eyebrow">ניהול פנסיון</span><h1>מרכז הפעילות</h1><p>{username && `מחובר/ת: ${username}`}</p></div><button className="text-button" onClick={signOut}>יציאה</button></div>{error && <div className="form-error" role="alert">{error}</div>}{loading ? <div className="empty-state">טוענים נתונים...</div> : <>
+    <section className="admin-section"><h2>התראות מנהלים</h2>{notifications.length === 0 ? <div className="empty-state compact"><p>אין התראות.</p></div> : <div className="notification-list">{notifications.map(item => <article className={item.is_read ? "notification" : "notification unread"} key={item.id}><div><strong>{item.title}</strong><p>{item.message}</p><time>{formatDateTime(item.created_at)}</time></div>{!item.is_read && <button className="text-button" onClick={() => markRead(item.id)}>סימון כנקראה</button>}</article>)}</div>}</section>
     <section className="admin-section"><h2>בקשות אירוח</h2>{requests.length === 0 ? <div className="empty-state"><p>עדיין אין בקשות.</p></div> : <div className="request-list">{requests.map(item => <article className="request-card" key={item.id}><div className="request-card-head"><div><span className={`status ${item.status}`}>{item.status_label}</span><h2>{item.dog_name}</h2><p>{item.service_label} · {formatDate(item.start_date)}–{formatDate(item.end_date)}</p></div><span className="request-number">#{item.id}</span></div><dl><div><dt>בעלים</dt><dd>{item.contact_name}</dd></div><div><dt>טלפון</dt><dd><a href={`tel:${item.phone}`}>{item.phone}</a></dd></div><div><dt>חשבון</dt><dd>{item.owner_email ?? "אורח"}</dd></div><div><dt>גיל</dt><dd>{item.dog_age ?? "לא צוין"}</dd></div></dl>{item.care_notes && <div className="notes"><strong>מידע חשוב</strong><p>{item.care_notes}</p></div>}{item.status === "pending" ? <div className="decision-actions"><button className="button approve" disabled={working === item.id} onClick={() => decide(item.id, "approved")}>אישור ויצירת הזמנה</button><button className="button reject" disabled={working === item.id} onClick={() => decide(item.id, "rejected")}>דחיית הבקשה</button></div> : <p className="audit">טופלה על ידי {item.reviewed_by_name} {item.reviewed_at && `בתאריך ${formatDateTime(item.reviewed_at)}`}</p>}</article>)}</div>}</section>
     <section className="admin-section"><h2>הזמנות ועדכוני שהות</h2>{bookings.length === 0 ? <div className="empty-state"><p>אישור בקשה ייצור כאן הזמנה.</p></div> : <div className="request-list">{bookings.map(booking => <article className="request-card booking-card" key={booking.id}><div className="request-card-head"><div><span className={`status ${booking.status === "active" ? "approved" : "pending"}`}>{booking.status_label}</span><h2>{booking.dog_name ?? "ללא כרטיס כלב"}</h2><p>{booking.service_label} · {formatDate(booking.start_date)}–{formatDate(booking.end_date)}</p><p>{booking.owner_email ?? "בקשת אורח — אין אזור אישי מקושר"}</p></div><select aria-label="סטטוס הזמנה" value={booking.status} disabled={working === booking.id} onChange={event => changeBookingStatus(booking.id, event.target.value)}><option value="upcoming">עתידית</option><option value="active">פעילה</option><option value="completed">הסתיימה</option><option value="canceled">בוטלה</option></select></div><form className="update-form" onSubmit={event => addUpdate(event, booking.id)}><h3>עדכון חדש מהשהות</h3><div className="two-columns"><label>סוג<select name="kind" defaultValue="general"><option value="general">עדכון כללי</option><option value="meal">אוכל ושתייה</option><option value="walk">טיול</option><option value="medication">תרופה</option></select></label><label className="checkbox-label"><input name="visible_to_owner" type="checkbox" defaultChecked />גלוי לבעלים</label></div><label>תוכן העדכון<textarea name="message" rows={3} required maxLength={2000} /></label><button className="button primary" disabled={working === booking.id}>פרסום עדכון</button></form>{booking.updates.length > 0 && <div className="admin-updates">{booking.updates.map(update => <p key={update.id}><strong>{update.kind_label}:</strong> {update.message} <small>{update.visible_to_owner ? "גלוי לבעלים" : "פנימי"}</small></p>)}</div>}{booking.dog && <form className="internal-note-form" onSubmit={event => addInternalNote(event, booking.dog!)}><h3>הערת טיפול פנימית</h3><label>הערה שאינה מוצגת לבעלים<textarea name="note" rows={2} required maxLength={2000} /></label><button className="button secondary" disabled={working === booking.dog}>שמירת הערה פנימית</button>{booking.internal_notes.map(note => <p key={note.id}><strong>{note.created_by_name}:</strong> {note.note}</p>)}</form>}</article>)}</div>}</section>
   </>}</main>;

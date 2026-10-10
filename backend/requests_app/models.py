@@ -6,6 +6,7 @@ class OwnerProfile(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="owner_profile")
     phone = models.CharField(max_length=30)
     created_at = models.DateTimeField(auto_now_add=True)
+    email_verified_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return self.user.get_full_name() or self.user.username
@@ -133,3 +134,26 @@ class InternalCareNote(models.Model):
 
     class Meta:
         ordering = ["-created_at", "-id"]
+
+
+class Notification(models.Model):
+    class Kind(models.TextChoices):
+        REQUEST_RECEIVED = "request_received", "בקשה התקבלה"
+        REQUEST_APPROVED = "request_approved", "בקשה אושרה"
+        REQUEST_REJECTED = "request_rejected", "בקשה נדחתה"
+        STAY_UPDATE = "stay_update", "עדכון מהשהות"
+        ACCOUNT_VERIFIED = "account_verified", "החשבון אומת"
+        REQUEST_LINKED = "request_linked", "בקשה קושרה לחשבון"
+
+    recipient = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications")
+    kind = models.CharField(max_length=32, choices=Kind.choices)
+    title = models.CharField(max_length=160)
+    message = models.TextField(max_length=2000)
+    stay_request = models.ForeignKey(StayRequest, null=True, blank=True, on_delete=models.CASCADE, related_name="notifications")
+    booking = models.ForeignKey(Booking, null=True, blank=True, on_delete=models.CASCADE, related_name="notifications")
+    created_at = models.DateTimeField(auto_now_add=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["recipient", "read_at", "created_at"], name="notification_inbox_idx")]

@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
-from .models import Booking, Dog, EmergencyContact, InternalCareNote, OwnerProfile, StayRequest, StayUpdate
+from .models import Booking, Dog, EmergencyContact, InternalCareNote, Notification, OwnerProfile, StayRequest, StayUpdate
 
 
 class OwnerRegistrationSerializer(serializers.Serializer):
@@ -153,3 +153,15 @@ class InternalCareNoteSerializer(serializers.ModelSerializer):
         model = InternalCareNote
         fields = ["id", "dog", "note", "created_by_name", "created_at"]
         read_only_fields = ["id", "created_by_name", "created_at"]
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
+    is_read = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Notification
+        fields = ["id", "kind", "kind_label", "title", "message", "stay_request", "booking", "created_at", "read_at", "is_read"]
+
+    def get_is_read(self, obj):
+        return obj.read_at is not None
